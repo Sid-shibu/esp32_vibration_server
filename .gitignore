@@ -1,0 +1,16 @@
+﻿# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore virtual environment
+venv/
+
+# Ignore log/data files
+*.log
+*.csv
+*.xlsx
+*.bin
+*.png
+
+# Ignore build folders (if any)
+build/
