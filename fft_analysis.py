@@ -2,142 +2,201 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime
-from scipy.fft import fft, fftfreq
-from numpy import hanning
+from scipy import signal, fftpack
+from sklearn.decomposition import PCA
+from mpl_toolkits.mplot3d import Axes3D
 
-# === Configuration ===
-ACCEL_SCALE = 9.81 / 16384.0  # Scaling raw data to m/s^2
-AMPLIFY_FACTOR = 10.0         # Amplify weak tremor signals
-MASS = 0.05                   # Assumed finger segment mass in kg
-ARM_LENGTH = 0.1              # Lever arm in meters
-TREMOR_FREQ_RANGE = (4, 12)   # Tremor frequency band (Hz)
-TREMOR_MAG_THRESHOLD = 0.05   # Lowered threshold for normalized FFT
+# ========================
+# MEDICAL ANALYSIS CONFIG
+# ========================
+TREMOR_BANDS = {
+    'Parkinsonian': (4, 6),
+    'Essential': (6, 12),
+    'Physiological': (8, 12),
+    'Cerebellar': (3, 8)
+}
 
-# === File Input ===
-filename = input("📂 Enter the name of your CSV file (e.g., Shahul.csv): ").strip()
-if not os.path.exists(filename):
-    raise FileNotFoundError(f"❌ File not found: {filename}")
+UPDRS_SCORING = {
+    'amplitude': [(0.1, 0.5), (0.5, 1.0), (1.0, 3.0), (3.0, 10.0)],
+    'frequency': [(3, 4), (4, 6), (6, 8), (8, 12)]
+}
 
-df = pd.read_csv(filename)
+# ========================
+# SUPPRESSION SYSTEM DESIGN
+# ========================
+SUPPRESSION_PARAMS = {
+    'required_bandwidth': 20,  # Hz
+    'max_actuator_force': 5.0,  # Newtons
+    'response_latency': 0.05   # seconds
+}
 
-# === Dynamically Calculate Sampling Frequency ===
-if 'timestamp' in df.columns:
-    timestamps = df['timestamp'].dropna().values
-    time_diffs = np.diff(timestamps)
-    mean_diff_sec = np.mean(time_diffs) / 1e6  # assuming microseconds
-    SAMPLING_FREQ = 1 / mean_diff_sec
-else:
-    raise KeyError("Column 'timestamp' not found for dynamic sampling rate calculation.")
+def clinical_tremor_analysis(data, fs):
+    """Comprehensive tremor analysis for medical diagnosis"""
+    results = {}
+    
+    # 1. Time Domain Analysis
+    results['time_features'] = {
+        'rms': np.sqrt(np.mean(data**2)),
+        'peak_to_peak': np.ptp(data),
+        'zero_crossings': len(np.where(np.diff(np.sign(data)))[0])
+    }
+    
+    # 2. Frequency Domain Analysis
+    n = len(data)
+    yf = fftpack.fft(data * np.hanning(n))
+    xf = fftpack.fftfreq(n, 1/fs)[:n//2]
+    yf_abs = 2.0/n * np.abs(yf[:n//2])
+    
+    # Find dominant tremor components
+    peaks, _ = signal.find_peaks(yf_abs, height=0.1*np.max(yf_abs))
+    dominant_freqs = xf[peaks]
+    dominant_amps = yf_abs[peaks]
+    
+    # 3. Tremor Classification
+    tremor_type = "Undetermined"
+    for name, band in TREMOR_BANDS.items():
+        if any((band[0] <= f <= band[1]) for f in dominant_freqs):
+            tremor_type = name
+            break
+    
+    # 4. UPDRS Scoring
+    updrs_score = 0
+    max_amp = np.max(dominant_amps)
+    for i, (low, high) in enumerate(UPDRS_SCORING['amplitude']):
+        if low <= max_amp < high:
+            updrs_score = i + 1
+            break
+    
+    # 5. Suppression System Parameters
+    suppression_params = {
+        'target_frequencies': dominant_freqs.tolist(),
+        'required_bandwidth': max(dominant_freqs) - min(dominant_freqs),
+        'actuator_force': 0.2 * max_amp * SUPPRESSION_PARAMS['max_actuator_force']
+    }
+    
+    return {
+        'time_features': results['time_features'],
+        'frequency_peaks': list(zip(dominant_freqs, dominant_amps)),
+        'tremor_type': tremor_type,
+        'updrs_score': updrs_score,
+        'suppression_params': suppression_params,
+        'raw_fft': (xf, yf_abs)
+    }
 
-# === Prepare Output Folder ===
-OUTPUT_DIR = f"fft_tremor_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+def plot_3d_trajectory(ax, x, y, z, title=""):
+    """Plot 3D trajectory of tremor"""
+    ax.plot(x, y, z, alpha=0.6)
+    ax.scatter(x[0], y[0], z[0], c='g', marker='o', label='Start')
+    ax.scatter(x[-1], y[-1], z[-1], c='r', marker='x', label='End')
+    ax.set_xlabel('X axis')
+    ax.set_ylabel('Y axis')
+    ax.set_zlabel('Z axis')
+    ax.set_title(title)
+    ax.legend()
 
-summary = []
+def generate_medical_report(results, output_dir):
+    """Generate comprehensive medical report"""
+    report = f"""
+    ======================
+    TREMOR ANALYSIS REPORT
+    ======================
+    
+    Patient ID: {results.get('patient_id', 'N/A')}
+    Date: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}
+    
+    [CLINICAL FINDINGS]
+    - Dominant Tremor Type: {results['tremor_type']}
+    - UPDRS Severity Score: {results['updrs_score']}/4
+    - Peak Tremor Frequency: {results['frequency_peaks'][0][0]:.2f} Hz
+    - Maximum Amplitude: {results['frequency_peaks'][0][1]:.4f} m/s²
+    
+    [SUPPRESSION SYSTEM PARAMETERS]
+    - Target Frequencies: {', '.join(f'{f:.2f}Hz' for f in results['suppression_params']['target_frequencies'])}
+    - Required Bandwidth: {results['suppression_params']['required_bandwidth']:.2f} Hz
+    - Recommended Actuator Force: {results['suppression_params']['actuator_force']:.2f} N
+    
+    [RECOMMENDATIONS]
+    {get_clinical_recommendations(results)}
+    """
+    
+    with open(os.path.join(output_dir, 'medical_report.txt'), 'w') as f:
+        f.write(report)
+    
+    return report
 
-# === Analyze Each Sensor ===
-for sensor in [col for col in df.columns if col.startswith('acc')]:
-    raw_full = df[sensor].dropna().values
-    SAMPLES = min(len(raw_full), 1024)  # Use up to 1024 samples (≈4 sec at 250 Hz)
-    if SAMPLES < 64:
-        continue
+def get_clinical_recommendations(results):
+    """Generate clinical recommendations based on analysis"""
+    if results['updrs_score'] >= 3:
+        return "Consider pharmacological intervention combined with mechanical suppression"
+    elif results['updrs_score'] == 2:
+        return "Mechanical suppression recommended with optional medication"
+    else:
+        return "Monitor progression; consider lifestyle modifications"
 
-    raw = raw_full[:SAMPLES]
-    signal = raw - np.mean(raw)
-    accel_raw = signal * ACCEL_SCALE
-    accel_amplified = accel_raw * AMPLIFY_FACTOR
+# ========================
+# MAIN PROCESSING PIPELINE
+# ========================
+def analyze_tremor_data(filename):
+    # Load data
+    df = pd.read_csv(filename)
+    
+    # Create output directory
+    output_dir = f"tremor_analysis_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Process each sensor
+    sensor_results = {}
+    for sensor in ['thumb', 'index', 'middle']:
+        try:
+            x = df[f'{sensor}_x'].values
+            y = df[f'{sensor}_y'].values
+            z = df[f'{sensor}_z'].values
+            
+            # Calculate magnitude
+            mag = np.sqrt(x**2 + y**2 + z**2)
+            
+            # Perform analysis
+            fs = 250  # Sampling frequency (Hz)
+            results = clinical_tremor_analysis(mag, fs)
+            
+            # Store results
+            sensor_results[sensor] = results
+            
+            # Generate plots
+            plt.figure(figsize=(12, 6))
+            plt.subplot(2, 1, 1)
+            plt.plot(mag)
+            plt.title(f'{sensor} - Time Domain')
+            
+            plt.subplot(2, 1, 2)
+            plt.plot(*results['raw_fft'])
+            plt.title(f'{sensor} - Frequency Domain')
+            plt.savefig(os.path.join(output_dir, f'{sensor}_analysis.png'))
+            plt.close()
+            
+            # 3D Trajectory Plot
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            plot_3d_trajectory(ax, x, y, z, f'{sensor} 3D Tremor Path')
+            plt.savefig(os.path.join(output_dir, f'{sensor}_3d_path.png'))
+            plt.close()
+            
+        except KeyError:
+            print(f"Skipping {sensor} - missing data columns")
+    
+    # Generate comprehensive report
+    main_results = {
+        'patient_id': input("Enter patient ID: "),
+        **sensor_results
+    }
+    report = generate_medical_report(main_results, output_dir)
+    
+    print(f"\nAnalysis complete. Results saved to: {output_dir}")
+    print(report)
+    
+    return main_results
 
-    def compute_fft(accel):
-        windowed = accel * hanning(len(accel))
-        fft_result = np.abs(fft(windowed))[:len(accel)//2]
-        fft_result /= len(accel)  # Normalize
-        freqs = fftfreq(len(accel), 1/SAMPLING_FREQ)[:len(accel)//2]
-        forces = MASS * accel
-        torques = forces * ARM_LENGTH
-        peak = np.argmax(fft_result)
-        avg_accel = np.mean(np.abs(accel))
-        return {
-            "freqs": freqs,
-            "fft": fft_result,
-            "accel": accel[:len(accel)//2],
-            "force": forces[:len(accel)//2],
-            "torque": torques[:len(accel)//2],
-            "peak_freq": freqs[peak],
-            "avg_freq": np.average(freqs, weights=fft_result),
-            "peak_accel": abs(accel[peak]),
-            "avg_accel": avg_accel,
-            "peak_torque": abs(torques[peak]),
-            "avg_torque": np.mean(np.abs(torques))
-        }
-
-    raw_data = compute_fft(accel_raw)
-    amp_data = compute_fft(accel_amplified)
-
-    # Tremor Detection
-    tremor_band = (amp_data["freqs"] >= TREMOR_FREQ_RANGE[0]) & (amp_data["freqs"] <= TREMOR_FREQ_RANGE[1])
-    tremor_magnitude = amp_data["fft"][tremor_band]
-    tremor_peak_mag = np.max(tremor_magnitude) if len(tremor_magnitude) > 0 else 0
-    tremor_detected = tremor_peak_mag > TREMOR_MAG_THRESHOLD
-
-    # Save FFT CSVs
-    pd.DataFrame({
-        'bin': range(1, len(raw_data['freqs']) + 1),
-        'frequency': raw_data['freqs'],
-        'magnitude_raw': raw_data['fft'],
-        'acceleration_raw': raw_data['accel'],
-        'force_raw': raw_data['force'],
-        'torque_raw': raw_data['torque']
-    }).to_csv(os.path.join(OUTPUT_DIR, f"{sensor}_raw.csv"), index=False)
-
-    pd.DataFrame({
-        'bin': range(1, len(amp_data['freqs']) + 1),
-        'frequency': amp_data['freqs'],
-        'magnitude_amplified': amp_data['fft'],
-        'acceleration_amplified': amp_data['accel'],
-        'force_amplified': amp_data['force'],
-        'torque_amplified': amp_data['torque']
-    }).to_csv(os.path.join(OUTPUT_DIR, f"{sensor}_amplified.csv"), index=False)
-
-    # Plot FFT Comparison
-    plt.figure(figsize=(10, 5))
-    plt.plot(raw_data['freqs'], raw_data['fft'], label="Raw FFT")
-    plt.plot(amp_data['freqs'], amp_data['fft'], '--', label="Amplified FFT ×10")
-    plt.axvspan(*TREMOR_FREQ_RANGE, color='red', alpha=0.1, label="Tremor Band (4–12 Hz)")
-    plt.title(f"FFT Comparison - {sensor}")
-    plt.xlabel("Frequency (Hz)")
-    plt.ylabel("FFT Magnitude (normalized)")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, f"{sensor}_fft_comparison.png"))
-    plt.close()
-
-    # Summary Data
-    summary.append({
-        'sensor': sensor,
-        'sampling_rate_Hz': round(SAMPLING_FREQ, 2),
-        'samples_used': SAMPLES,
-        'raw_peak_freq_Hz': raw_data['peak_freq'],
-        'raw_avg_freq_Hz': raw_data['avg_freq'],
-        'raw_peak_accel_m/s2': raw_data['peak_accel'],
-        'raw_avg_accel_m/s2': raw_data['avg_accel'],
-        'raw_peak_torque_Nm': raw_data['peak_torque'],
-        'raw_avg_torque_Nm': raw_data['avg_torque'],
-        'amp_peak_freq_Hz': amp_data['peak_freq'],
-        'amp_avg_freq_Hz': amp_data['avg_freq'],
-        'amp_peak_accel_m/s2': amp_data['peak_accel'],
-        'amp_avg_accel_m/s2': amp_data['avg_accel'],
-        'amp_peak_torque_Nm': amp_data['peak_torque'],
-        'amp_avg_torque_Nm': amp_data['avg_torque'],
-        'tremor_peak_mag': tremor_peak_mag,
-        'tremor_detected': tremor_detected
-    })
-
-# Save Summary
-summary_df = pd.DataFrame(summary)
-summary_path = os.path.join(OUTPUT_DIR, "summary_stats_with_tremor.xlsx")
-summary_df.to_excel(summary_path, index=False)
-
-print(f"\n✅ Output directory: {OUTPUT_DIR}")
-print(f"📊 Summary file saved at: {summary_path}")
+# Run analysis
+if __name__ == "__main__":
+    filename = input("Enter data filename: ")
+    results = analyze_tremor_data(filename)
